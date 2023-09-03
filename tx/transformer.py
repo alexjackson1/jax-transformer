@@ -1,7 +1,21 @@
+import dataclasses
+
 import flax.linen as nn
 from jaxtyping import Float, Array
 
-from modules import Embed, LayerNorm, PosEmbed, TransformerBlock, Unembed
+from tx.modules import Embed, LayerNorm, PosEmbed, TransformerBlock, Unembed
+
+
+@dataclasses.dataclass
+class ModelConfig:
+    model_dim: int = 256
+    layer_norm_eps: float = 1e-5
+    vocab_dim: int = 50257
+    context_length: int = 256
+    num_heads: int = 4
+    head_dim: int = 64
+    mlp_dim: int = 1024
+    num_layers: int = 2
 
 
 class Transformer(nn.Module):
@@ -13,6 +27,10 @@ class Transformer(nn.Module):
     head_dim: int = 64
     mlp_dim: int = 3072
     num_layers: int = 12
+
+    @classmethod
+    def from_config(cls, config: ModelConfig):
+        return cls(**config.__dict__)
 
     @nn.compact
     def __call__(self, tokens) -> Array:
@@ -51,7 +69,13 @@ if __name__ == "__main__":
     import jax
     import jax.numpy as jnp
 
+    from gpt2 import model as reference_gpt2
+    from debug_utils import print_nested_structure
+
     m = Transformer()
     v = m.init(jax.random.PRNGKey(0), jnp.ones((1, 1024), dtype=jnp.int32))
-    o = m.apply(v, jnp.ones((1, 1024), dtype=jnp.int32))
-    print(o.shape)
+    print_nested_structure(v)
+
+    # v = {"params": reference_gpt2.params_dict()}
+    # o = m.apply(v, jnp.ones((1, 1024), dtype=jnp.int32))
+    # print(o.shape)

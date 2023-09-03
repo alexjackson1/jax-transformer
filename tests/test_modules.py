@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import flax.linen as nn
 from jaxtyping import Array
 
-from modules import (
+from tx.modules import (
     MLP,
     Attention,
     Embed,

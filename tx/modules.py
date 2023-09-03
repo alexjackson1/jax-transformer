@@ -10,6 +10,7 @@ from jaxtyping import Array, Float, Int
 import einops
 
 
+# Array shape abbreviations:
 # b: batch (batch size)
 # p: position (sequence length)
 # m: model dimension (embedding size)
