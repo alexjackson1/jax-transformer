@@ -78,7 +78,7 @@ def test_embed_apply():
 
 
 def test_pos_embed_init():
-    layer = PosEmbed(features=768, context_length=1024)
+    layer = PosEmbed(features=768, num_embeddings=1024)
     shape = (2, 4)
     variables = init(layer, shape, jnp.int32)
     embedding = get_param(variables, "embedding")
@@ -86,7 +86,7 @@ def test_pos_embed_init():
 
 
 def test_pos_embed_apply():
-    layer = PosEmbed(features=768, context_length=1024)
+    layer = PosEmbed(features=768, num_embeddings=1024)
     shape = (2, 4)
     variables = init(layer, shape, jnp.int32)
     output = apply_int(layer, variables, shape)

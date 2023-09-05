@@ -5,7 +5,6 @@ import einops
 
 from datasets.arrow_dataset import Dataset
 from transformers import AutoTokenizer
-
 from jaxtyping import Array, Int
 
 
@@ -45,9 +44,6 @@ class DataLoader:
 
 
 def keep_single_column(dataset: Dataset, col_name: str):
-    """
-    Acts on a HuggingFace dataset to delete all columns apart from a single column name - useful when we want to tokenize and mix together different strings
-    """
     for key in dataset.features:
         if key != col_name:
             dataset = dataset.remove_columns(key)

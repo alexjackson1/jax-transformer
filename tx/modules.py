@@ -1,20 +1,13 @@
-import functools
+from functools import partial
 from typing import Iterable
 
 import jax
+import jax.lax as lax
 import jax.numpy as jnp
-
-import flax.linen as nn
 from jaxtyping import Array, Float, Int
 
+import flax.linen as nn
 import einops
-
-
-# Array shape abbreviations:
-# b: batch (batch size)
-# p: position (sequence length)
-# m: model dimension (embedding size)
-# v: token index (vocab size)
 
 
 class LayerNorm(nn.Module):
@@ -36,93 +29,116 @@ class LayerNorm(nn.Module):
 class Embed(nn.Module):
     num_embeddings: int
     features: int
+    init_range: float = 0.02
 
-    @nn.compact
-    def __call__(self, tokens: Int[Array, "b p"]) -> Float[Array, "b p m"]:
+    def setup(self):
         shape = (self.num_embeddings, self.features)
-        embedding = self.param("embedding", jax.nn.initializers.normal(0.02), shape)
-        return jnp.take(embedding, tokens, axis=0)
+        init_fn = nn.initializers.normal(self.init_range)
+        self.embedding = self.param("embedding", init_fn, shape)
+
+    def __call__(self, tokens: Int[Array, "b p"]) -> Float[Array, "b p m"]:
+        return jnp.take(self.embedding, tokens, axis=0)
 
 
 class PosEmbed(nn.Module):
-    context_length: int
+    num_embeddings: int
     features: int
+    init_range: float = 0.02
 
-    @nn.compact
+    def setup(self):
+        shape = (self.num_embeddings, self.features)
+        init_fn = nn.initializers.normal(self.init_range)
+        self.embedding = self.param("embedding", init_fn, shape)
+
     def __call__(self, tokens: Int[Array, "b p"]) -> Float[Array, "b p m"]:
-        shape = (self.context_length, self.features)
-        embedding = self.param("embedding", jax.nn.initializers.normal(0.02), shape)
         batch, seq_len = tokens.shape
-        return einops.repeat(embedding[:seq_len], "p m -> b p m", b=batch)
+        return einops.repeat(self.embedding[:seq_len], "p m -> b p m", b=batch)
 
 
 class Attention(nn.Module):
     num_heads: int
     head_dim: int
     model_dim: int
+    init_range: float = 0.02
+
+    def setup(self):
+        self.causal_mask = nn.make_causal_mask(
+            jnp.ones((1, 1024), dtype="bool"), dtype="bool"
+        )
+
+        init_dense = partial(
+            nn.DenseGeneral,
+            kernel_init=jax.nn.initializers.normal(stddev=self.init_range),
+            bias_init=jax.nn.initializers.zeros,
+        )
+
+        self.c_attn = init_dense(features=3 * self.model_dim)
+        self.c_proj = init_dense(features=self.model_dim)
 
     @nn.compact
     def __call__(self, x: Float[Array, "b p m"]) -> Float[Array, "b p m"]:
-        kernel_init = jax.nn.initializers.normal(0.02)
-        bias_init = jax.nn.initializers.zeros
+        batch_size = x.shape[0]
 
-        kernel_shape = (self.num_heads, self.model_dim, self.head_dim)
-        bias_shape = (self.num_heads, self.head_dim)
+        hidden_states = self.c_attn(x)
+        query, key, value = self._split_outputs(hidden_states)
+        query_length, key_length = query.shape[1], key.shape[1]
 
-        # Query linear transformation
-        kernel_query = self.param(f"kernel_query", kernel_init, kernel_shape)
-        bias_query = self.param(f"bias_query", bias_init, bias_shape)
-        query = einops.einsum(x, kernel_query, "b p m, n m h -> b p n h") + bias_query
+        causal_mask = self.causal_mask[:, :, :query_length, :key_length]
+        mask_shape = (batch_size,) + causal_mask.shape[1:]
+        causal_mask = jnp.broadcast_to(causal_mask, mask_shape)
 
-        # Key linear transformation
-        kernel_key = self.param(f"kernel_key", kernel_init, kernel_shape)
-        bias_key = self.param(f"bias_key", bias_init, bias_shape)
-        key = einops.einsum(x, kernel_key, "b p m, n m h -> b p n h") + bias_key
+        attention_bias = lax.select(
+            causal_mask > 0,
+            jnp.full(causal_mask.shape, 0.0).astype(jnp.float32),
+            jnp.full(causal_mask.shape, jnp.finfo(jnp.float32).min).astype(jnp.float32),
+        )
 
-        # Value linear transformation
-        kernel_value = self.param(f"kernel_value", kernel_init, kernel_shape)
-        bias_value = self.param(f"bias_value", bias_init, bias_shape)
-        value = einops.einsum(x, kernel_value, "b p m, n m h -> b p n h") + bias_value
+        attn_weights = nn.attention.dot_product_attention_weights(
+            query,
+            key,
+            bias=attention_bias,
+            dropout_rng=None,
+            deterministic=True,
+            dtype=jnp.float32,
+            precision=None,
+        )
 
-        # Calculate attention scores
-        attn_scores = einops.einsum(query, key, "b pq n h, b pk n h -> b n pq pk")
-        attn_scores_masked = self.apply_causal_mask(attn_scores / self.head_dim**0.5)
-        attn_pattern = jax.nn.softmax(attn_scores_masked, axis=-1)
+        attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, value)
+        attn_output = self._merge_heads(attn_output)
+        attn_output = self.c_proj(attn_output)
 
-        # Compute weighted average of values (by applying attention pattern)
-        z = einops.einsum(value, attn_pattern, "b pk n h, b n pq pk -> b pq n h")
+        return attn_output
 
-        # Calculate output (by applying kernel and summing over heads, then adding bias)
-        out_shape = (self.num_heads, self.head_dim, self.model_dim)
-        kernel_out = self.param(f"kernel_out", kernel_init, out_shape)
-        bias_out = self.param(f"bias_out", bias_init, (self.model_dim,))
-        attn_out = einops.einsum(z, kernel_out, "b pq n h, n h m -> b pq m") + bias_out
+    def _split_outputs(self, hidden_states: Array):
+        return map(self._split_heads, jnp.split(hidden_states, 3, axis=2))
 
-        return attn_out
+    def _split_heads(self, hidden_states: Array):
+        return hidden_states.reshape(
+            hidden_states.shape[:2] + (self.num_heads, self.head_dim)
+        )
 
-    def apply_causal_mask(self, attn_scores: jax.Array):
-        mask = jnp.triu(jnp.ones_like(attn_scores), k=1)
-        return attn_scores * mask - 1e10 * (1 - mask)
+    def _merge_heads(self, hidden_states: Array):
+        return hidden_states.reshape(hidden_states.shape[:2] + (self.model_dim,))
 
 
 class MLP(nn.Module):
     features: Iterable[int]
     init_range: float = 0.02
 
-    @nn.compact
-    def __call__(self, x: Float[Array, "b p m"]) -> Float[Array, "b p m"]:
-        layer = functools.partial(
+    def setup(self):
+        dense_init = partial(
             nn.DenseGeneral,
             axis=-1,
-            kernel_init=jax.nn.initializers.normal(self.init_range),
+            kernel_init=jax.nn.initializers.normal(stddev=self.init_range),
             bias_init=jax.nn.initializers.zeros,
         )
+        self.fc_1 = dense_init(features=self.features[0])
+        self.proj = dense_init(features=self.features[1])
 
-        for i, f in enumerate(self.features):
-            x = layer(features=f)(x)
-            if i < len(self.features) - 1:
-                x = jax.nn.gelu(x)
-
+    def __call__(self, x: Float[Array, "b p m"]) -> Float[Array, "b p m"]:
+        x = self.fc_1(x)
+        x = nn.gelu(x)
+        x = self.proj(x)
         return x
 
 
@@ -132,37 +148,42 @@ class TransformerBlock(nn.Module):
     model_dim: int
     mlp_dim: int
     epsilon: float = 1e-5
+    init_range: float = 0.02
 
-    @nn.compact
-    def __call__(self, x: Float[Array, "b p m"]) -> Float[Array, "b p m"]:
-        x_1 = LayerNorm(epsilon=self.epsilon)(x)
-        x = (
-            Attention(
-                num_heads=self.num_heads,
-                head_dim=self.head_dim,
-                model_dim=self.model_dim,
-            )(x_1)
-            + x
+    def setup(self):
+        self.ln_1 = LayerNorm(epsilon=self.epsilon)
+        self.attn = Attention(
+            num_heads=self.num_heads,
+            head_dim=self.head_dim,
+            model_dim=self.model_dim,
+            init_range=self.init_range,
+        )
+        self.ln_2 = LayerNorm(epsilon=self.epsilon)
+        self.mlp = MLP(
+            features=[self.mlp_dim, self.model_dim],
+            init_range=self.init_range,
         )
 
-        # MLP
-        x_2 = LayerNorm(epsilon=self.epsilon)(x)
-        x = MLP(features=[self.mlp_dim, self.model_dim])(x_2) + x
-
+    def __call__(self, x: Float[Array, "b p m"]) -> Float[Array, "b p m"]:
+        x_norm = self.ln_1(x)
+        x = self.attn(x_norm) + x
+        x_norm = self.ln_2(x)
+        x = self.mlp(x_norm) + x
         return x
 
 
 class Unembed(nn.Module):
     features: int
     num_embeddings: int
+    init_range: float = 0.02
 
-    @nn.compact
-    def __call__(self, x: Float[Array, "b p m"]) -> Float[Array, "b p v"]:
+    def setup(self):
+        init_fn = jax.nn.initializers.normal(stddev=self.init_range)
         shape = (self.features, self.num_embeddings)
-        scale = self.param("kernel", jax.nn.initializers.normal(0.02), shape)
-        x = einops.einsum(x, scale, "b p m, m v -> b p v")
+        self.kernel = self.param("kernel", init_fn, shape)
+        self.bias = self.param("bias", jax.nn.initializers.zeros, (shape[-1],))
 
-        bias = self.param("bias", jax.nn.initializers.zeros, (self.num_embeddings,))
-        x = x + bias
-
+    def __call__(self, x: Float[Array, "b p m"]) -> Float[Array, "b p v"]:
+        x = einops.einsum(x, self.kernel, "b p m, m v -> b p v")
+        x = x + self.bias
         return x
