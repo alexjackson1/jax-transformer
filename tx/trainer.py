@@ -1,4 +1,3 @@
-import sys
 from typing import Callable, Dict, NamedTuple, Union
 import dataclasses
 
@@ -18,8 +17,8 @@ from jaxtyping import Array, Float, Int
 import optax
 
 from gpt2 import tokenizer
+from data_utils import tokenize_ds, DataLoader
 from tx.transformer import Transformer, ModelConfig
-from tx.data_utils import tokenize_ds, DataLoader
 
 Batch = Dict[str, Int[Array, "b s"]]
 Variables = FrozenVariableDict
