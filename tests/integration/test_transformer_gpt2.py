@@ -11,7 +11,7 @@ import flax.linen as nn
 
 from transformers.models.gpt2.modeling_flax_gpt2 import FlaxGPT2Block, GPT2Config
 
-from gpt2 import GPT2_PARAMS, tokenizer, reference_gpt2
+from gpt2 import GPT2_PARAMS, tokenizer, model
 from tx import LayerNorm, Embed, PosEmbed, TransformerBlock, Unembed
 
 
@@ -30,7 +30,7 @@ def test_each_layer():
 
     ## Control embedding
     hf_embed_mod = nn.Embed(50257, 768, embedding_init=init_fn, dtype=jnp.float32)
-    hf_embed_params = {"params": reference_gpt2._params["transformer"]["wte"]}
+    hf_embed_params = {"params": model._params["transformer"]["wte"]}
     hf_embed_out: Array = hf_embed_mod.apply(hf_embed_params, tokens)
 
     ## Compare embeddings
@@ -46,7 +46,7 @@ def test_each_layer():
 
     ## Control positional embedding
     hf_pos_embed_mod = nn.Embed(1024, 768, embedding_init=init_fn, dtype=jnp.float32)
-    hf_pos_embed_params = {"params": reference_gpt2._params["transformer"]["wpe"]}
+    hf_pos_embed_params = {"params": model._params["transformer"]["wpe"]}
     hf_pos_ids = jnp.broadcast_to(
         jnp.arange(seq_length, dtype="i4")[None, :], (batch_size, seq_length)
     )
@@ -70,7 +70,7 @@ def test_each_layer():
 
         ## Control block
         hf_block_mod = FlaxGPT2Block(GPT2Config.from_pretrained("gpt2"))
-        hf_block_params = {"params": reference_gpt2._params["transformer"]["h"][f"{i}"]}
+        hf_block_params = {"params": model._params["transformer"]["h"][f"{i}"]}
         hf_block_out: Array = hf_block_mod.apply(hf_block_params, hf_next_input)[0]
 
         ## Compare blocks
@@ -90,7 +90,7 @@ def test_each_layer():
 
     ## Control layer norm
     hf_ln_f_mod = nn.LayerNorm(epsilon=1e-5)
-    hf_ln_f_params = {"params": reference_gpt2._params["transformer"]["ln_f"]}
+    hf_ln_f_params = {"params": model._params["transformer"]["ln_f"]}
     hf_ln_f_out: Array = hf_ln_f_mod.apply(
         hf_ln_f_params, tx_next_input
     )  # hf_next_input
@@ -117,9 +117,7 @@ def test_each_layer():
     )
     hf_unembed_params = {
         "params": {
-            "kernel": jnp.transpose(
-                reference_gpt2._params["transformer"]["wte"]["embedding"]
-            ),
+            "kernel": jnp.transpose(model._params["transformer"]["wte"]["embedding"]),
             "bias": jnp.zeros((50257,)),
         }
     }

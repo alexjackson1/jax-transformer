@@ -1,5 +1,6 @@
-from .transformer import Transformer
-from .modules import (
+from .nn import (
+    Transformer,
+    ModelConfig,
     LayerNorm,
     Embed,
     PosEmbed,
@@ -7,4 +8,5 @@ from .modules import (
     MLP,
     TransformerBlock,
     Unembed,
+    HookedTransformer,
 )

@@ -10,7 +10,8 @@ import jax.numpy as jnp
 import flax.linen as nn
 from jaxtyping import Array
 
-from tx.modules import (
+from tx import (
+    Transformer,
     MLP,
     Attention,
     Embed,
@@ -160,3 +161,17 @@ def test_unembed_apply():
     variables = init(layer, shape)
     output = apply_float(layer, variables, shape)
     assert output.shape == (*shape[:-1], 50257)
+
+
+def test_transformer_init():
+    layer = Transformer()
+    shape = (2, 4)
+    init(layer, shape, jnp.int32)
+
+
+def test_transformer_apply():
+    layer = Transformer()
+    shape = (2, 4)
+    variables = init(layer, shape, jnp.int32)
+    output = apply_int(layer, variables, shape)
+    assert output.shape == (*shape, 50257)

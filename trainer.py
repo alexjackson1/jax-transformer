@@ -16,9 +16,9 @@ from flax.training.train_state import TrainState as FlaxTrainState
 from jaxtyping import Array, Float, Int
 import optax
 
+from tx.nn import Transformer, ModelConfig
 from gpt2 import tokenizer
 from data_utils import tokenize_ds, DataLoader
-from tx.transformer import Transformer, ModelConfig
 
 Batch = Dict[str, Int[Array, "b s"]]
 Variables = FrozenVariableDict
